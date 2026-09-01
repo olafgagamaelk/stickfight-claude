@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>STIKKAOS Online — Multiplayer Stickman Brawl</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="game" width="1280" height="720"></canvas>
+    <div id="hud" class="hidden"></div>
+
+    <!-- LANDING / CONNECT -->
+    <div id="screen-menu" class="screen">
+      <div class="subtitle">Online Multiplayer · Fysikbaseret Kaos</div>
+      <div class="title display">STIKKAOS</div>
+      <div class="ctrlinfo">Spil mod venner på tværs af computere. Opret et rum og del koden, eller deltag med en kode.</div>
+      <input id="nameInput" class="textinput" maxlength="14" placeholder="Dit navn (valgfrit)">
+      <div class="btnrow">
+        <button class="btn big" id="btn-create">Opret rum</button>
+      </div>
+      <div class="joinrow">
+        <input id="codeInput" class="textinput code" maxlength="4" placeholder="KODE">
+        <button class="btn alt" id="btn-join">Deltag</button>
+      </div>
+      <div id="menuError" class="errmsg"></div>
+      <button class="btn ghost" id="btn-howto">Kontroller</button>
+    </div>
+
+    <div id="screen-howto" class="screen hidden">
+      <div class="title display" style="font-size:36px;">Kontroller</div>
+      <div class="ctrlinfo" style="text-align:left;">
+        <b>Bevæg:</b> A/D eller piletaster<br>
+        <b>Hop:</b> W, Pil op eller Space (hold for at sigte op)<br>
+        <b>Sigt ned:</b> S eller Pil ned<br>
+        <b>Angrib / skyd:</b> F, Enter eller J<br>
+        <b>Væg-hop:</b> hop igen mens du rører en væg i luften<br>
+        <b>Controller:</b> venstre stick/D-pad, A-knap hop, X-knap angrib — forbindes automatisk<br><br>
+        Gå hen over et våben på jorden for at samle det op automatisk, hvis du er ubevæbnet. Hold øje med himlen — der falder våbenkasser ned med jævne mellemrum.
+      </div>
+      <button class="btn ghost" id="btn-back-howto">Tilbage</button>
+    </div>
+
+    <!-- LOBBY -->
+    <div id="screen-lobby" class="screen hidden">
+      <div class="subtitle">Rum-kode</div>
+      <div class="title display" id="roomCodeDisplay" style="font-size:56px;">----</div>
+      <div class="ctrlinfo">Del koden med dine venner, så de kan taste den ind under "Deltag".</div>
+      <div id="lobbyPlayers" class="lobbyPlayers"></div>
+      <div class="btnrow">
+        <button class="btn alt" id="btn-ready">Klar</button>
+        <button class="btn big hidden" id="btn-start">Start kamp</button>
+      </div>
+      <div class="ctrlinfo" id="lobbyHint">Venter på at alle spillere trykker "Klar"...</div>
+      <button class="btn ghost" id="btn-leave">Forlad rum</button>
+    </div>
+
+  </div>
+</div>
+<footer class="credits">STIKKAOS Online — original fan-inspireret fysikbrawler</footer>
+<script src="client.js"></script>
+</body>
+</html>
