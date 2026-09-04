@@ -144,15 +144,15 @@ function poseTargets(p){
   t.lFoot = {x:hx-12+swingA*17-airSpread, y:hy+34};
   t.rKnee = {x:hx+10+swingB*8, y:hy+16};
   t.rFoot = {x:hx+12+swingB*17+airSpread, y:hy+34};
-  let aimAngle=0;
-  if(p.aimUp) aimAngle=-0.62; else if(p.aimDown && !p.grounded) aimAngle=0.62;
+  const aimAngle = p.aimAngle||0;
   if(p.weapon!=='fists'){
-    t.rElbow={x:neck.x+Math.cos(aimAngle)*f*14, y:neck.y+Math.sin(aimAngle)*14-4};
-    t.rHand ={x:neck.x+Math.cos(aimAngle)*f*30, y:neck.y+Math.sin(aimAngle)*30};
+    t.rElbow={x:neck.x+Math.cos(aimAngle)*16, y:neck.y+Math.sin(aimAngle)*16};
+    t.rHand ={x:neck.x+Math.cos(aimAngle)*32, y:neck.y+Math.sin(aimAngle)*32};
     t.lElbow={x:neck.x-f*6, y:neck.y+8};
-    t.lHand ={x:neck.x-f*12+Math.cos(aimAngle)*f*12, y:neck.y+12+Math.sin(aimAngle)*10};
+    t.lHand ={x:neck.x+Math.cos(aimAngle)*20, y:neck.y+Math.sin(aimAngle)*20+6};
   } else if(p.attackFlash>0){
-    t.rElbow={x:neck.x+f*14, y:neck.y-6}; t.rHand={x:neck.x+f*30, y:neck.y-2};
+    t.rElbow={x:neck.x+Math.cos(aimAngle)*16, y:neck.y+Math.sin(aimAngle)*16};
+    t.rHand ={x:neck.x+Math.cos(aimAngle)*32, y:neck.y+Math.sin(aimAngle)*32};
     t.lElbow={x:neck.x-f*4, y:neck.y+6}; t.lHand={x:neck.x-f*10, y:neck.y+16};
   } else {
     t.lElbow={x:neck.x-f*4+swingB*4, y:neck.y+8}; t.lHand={x:neck.x-f*10+swingB*11, y:neck.y+22};
@@ -229,6 +229,7 @@ function ragdollImpulse(p, dirx, diry, power){
    ============================================================ */
 const GRAVITY=1650, MAX_FALL=1500, GROUND_ACCEL=3400, AIR_ACCEL=1900, MAX_SPEED=360;
 const JUMP_VEL=-820, WALL_JUMP_VX=440, WALL_JUMP_VY=-760, WALL_SLIDE_CAP=240;
+function sendFx(kind,x,y){ send({t:'fx', kind, x, y}); }
 function localGetBox(e){ return {x:e.x-HALF_W, y:e.y+HEAD_TOP_OFFSET, w:HALF_W*2, h:FOOT_OFFSET-HEAD_TOP_OFFSET}; }
 function localRectsOverlap(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
 function localMoveAndCollide(e, dt){
@@ -243,37 +244,41 @@ function localMoveAndCollide(e, dt){
       e.vx=0; box=localGetBox(e);
     }
   }
+  const wasGrounded = e.grounded;
   e.grounded=false;
   e.y += e.vy*dt;
   box = localGetBox(e);
   for(const pl of currentArena.platforms){
     if(localRectsOverlap(box,pl)){
       if(e.vy>=0){
-        if(pl.bouncePad){ e.y=pl.y-FOOT_OFFSET-0.01; e.vy=-pl.bounceForce; e.grounded=false; }
-        else { e.y=pl.y-FOOT_OFFSET-0.01; e.vy=0; e.grounded=true; }
+        if(pl.bouncePad){
+          e.y=pl.y-FOOT_OFFSET-0.01; e.vy=-pl.bounceForce; e.grounded=false;
+          sfx.jump(); sfx.land(); spawnParticles(e.x, pl.y, 14, '#7CFC00', 260, 0.4, 500);
+          sendFx('bounce', e.x, pl.y);
+        } else { e.y=pl.y-FOOT_OFFSET-0.01; e.vy=0; e.grounded=true; }
       } else { e.y = pl.y+pl.h-HEAD_TOP_OFFSET+0.01; e.vy=0; }
       box = localGetBox(e);
     }
   }
+  if(!wasGrounded && e.grounded && e._prevVy>650){ sfx.land(); spawnDust(e.x,e.y); }
+  e._prevVy = e.vy;
   if(!e.grounded && e.touchWallDir!==0 && e.vy>0) e.vy=Math.min(e.vy, WALL_SLIDE_CAP);
 }
 function stepLocalPlayer(lp, input, dt){
   const accel = lp.grounded ? GROUND_ACCEL : AIR_ACCEL;
-  if(input.left && !input.right){ lp.vx -= accel*dt; lp.facing=-1; }
-  else if(input.right && !input.left){ lp.vx += accel*dt; lp.facing=1; }
+  if(input.left && !input.right) lp.vx -= accel*dt;
+  else if(input.right && !input.left) lp.vx += accel*dt;
   else if(lp.grounded){ lp.vx *= 0.78; if(Math.abs(lp.vx)<8) lp.vx=0; }
   lp.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, lp.vx));
 
   if(input.jump && !lp._prevJump && lp.ragdollTimer<=0){
-    if(lp.grounded){ lp.vy=JUMP_VEL; lp.grounded=false; sfx.jump(); spawnDust(lp.x,lp.y); }
+    if(lp.grounded){ lp.vy=JUMP_VEL; lp.grounded=false; sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y); }
     else if(lp.touchWallDir!==0){
-      lp.vx = -lp.touchWallDir*WALL_JUMP_VX; lp.vy = WALL_JUMP_VY; lp.facing=-lp.touchWallDir; lp.touchWallDir=0;
-      sfx.jump(); spawnDust(lp.x,lp.y);
+      lp.vx = -lp.touchWallDir*WALL_JUMP_VX; lp.vy = WALL_JUMP_VY; lp.touchWallDir=0;
+      sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y);
     }
   }
   lp._prevJump = input.jump;
-  lp.aimDown = !!(input.down && !lp.grounded);
-  lp.aimUp = !!(input.jump && !input.down);
 
   lp.vy += GRAVITY*dt; lp.vy = Math.min(lp.vy, MAX_FALL);
   localMoveAndCollide(lp, dt);
@@ -346,6 +351,12 @@ function handleMessage(msg){
     renderLobby(msg);
   } else if(msg.t==='roomList'){
     renderRoomList(msg.rooms);
+  } else if(msg.t==='fx'){
+    if(msg.id!==myId){
+      if(msg.kind==='jump'){ spawnDust(msg.x,msg.y); sfx.jump(); }
+      else if(msg.kind==='land'){ spawnDust(msg.x,msg.y); sfx.land(); }
+      else if(msg.kind==='bounce'){ spawnParticles(msg.x,msg.y,14,'#7CFC00',260,0.4,500); sfx.jump(); sfx.land(); }
+    }
   } else if(msg.t==='state'){
     latestSnap = msg.snap;
     latestSnap._recvAt = performance.now();
@@ -374,23 +385,22 @@ function applySnapshot(snap){
     if(!lp){
       lp = { id:sp.id, idx:sp.idx, name:sp.name, color:sp.color,
         x:sp.x, y:sp.y, vx:sp.vx||0, vy:sp.vy||0, prevX:sp.x, prevY:sp.y, targetX:sp.x, targetY:sp.y, recvTime:now,
-        facing:sp.facing, grounded:sp.grounded, touchWallDir:0, _prevJump:false, attackCooldownLocal:0,
+        facing:sp.facing, grounded:sp.grounded, aimAngle:sp.aimAngle||0, touchWallDir:0, _prevJump:false, attackCooldownLocal:0,
         weapon:sp.weapon, ammo:sp.ammo, damage:sp.damage,
         alive:sp.alive, ragdollTimer:sp.ragdollTimer, walkPhase:sp.walkPhase, roundWins:sp.roundWins,
-        aimUp:sp.aimUp, aimDown:sp.aimDown, invuln:sp.invuln, hitFlash:0, attackFlash:0, forceSync:false };
+        invuln:sp.invuln, hitFlash:0, attackFlash:0 };
       initSkeleton(lp);
       netPlayers.set(sp.id, lp);
     } else {
-      if(isSelf){
-        const dx=sp.x-lp.x, dy=sp.y-lp.y;
-        if(lp.forceSync || Math.hypot(dx,dy)>130){ lp.x=sp.x; lp.y=sp.y; lp.vx=sp.vx; lp.vy=sp.vy; lp.forceSync=false; }
-        else { lp.x += dx*0.15; lp.y += dy*0.15; }
-      } else {
+      if(!isSelf){
+        // remote player: position comes purely from what they reported — interpolate for smoothness
         lp.prevX = lp.targetX; lp.prevY = lp.targetY;
         lp.targetX = sp.x; lp.targetY = sp.y; lp.recvTime = now;
-        lp.facing=sp.facing; lp.grounded=sp.grounded; lp.aimUp=sp.aimUp; lp.aimDown=sp.aimDown;
+        lp.facing=sp.facing; lp.grounded=sp.grounded; lp.aimAngle=sp.aimAngle||0;
         lp.walkPhase=sp.walkPhase;
       }
+      // self: x/y/vx/vy/facing/grounded/walkPhase/aimAngle are fully owned by local prediction —
+      // the server never overrides normal movement, only combat outcomes (via events below).
       lp.name=sp.name; lp.color=sp.color;
       lp.weapon=sp.weapon; lp.ammo=sp.ammo; lp.damage=sp.damage; lp.alive=sp.alive;
       lp.ragdollTimer=sp.ragdollTimer; lp.roundWins=sp.roundWins; lp.invuln=sp.invuln;
@@ -404,13 +414,17 @@ function processEvents(events){
   for(const e of events){
     if(e.t==='hit'){
       const lp = netPlayers.get(e.id);
-      if(lp){ ragdollImpulse(lp, e.dirx, e.diry, e.power); lp.hitFlash=0.15; spawnParticles(lp.x, lp.y-30, 10, '#fff', 260, 0.35, 900); if(e.id===myId) lp.forceSync=true; }
+      if(lp){
+        ragdollImpulse(lp, e.dirx, e.diry, e.power); lp.hitFlash=0.15;
+        spawnParticles(lp.x, lp.y-30, 10, '#fff', 260, 0.35, 900);
+        if(e.id===myId){
+          // this is the one place the server overrides local movement: a confirmed hit's knockback.
+          lp.vx += e.dirx*e.power; lp.vy += e.diry*e.power - e.power*0.18;
+        }
+      }
       sfx.hit();
     } else if(e.t==='ko'){
       spawnParticles(e.x,e.y,20,'#ddd',300,0.6,500); sfx.ko(); shake(10,0.3);
-    } else if(e.t==='jump'){
-      const lp = netPlayers.get(e.id); if(lp) spawnDust(lp.x,lp.y);
-      sfx.jump();
     } else if(e.t==='shot'){
       const lp = netPlayers.get(e.id);
       spawnParticles(e.x,e.y,4,'#ffe8a3',180,0.12,300);
@@ -555,19 +569,33 @@ function updateHUD(players){
 }
 
 /* ============================================================
-   INPUT
+   INPUT — keyboard/gamepad for movement, mouse for aiming
    ============================================================ */
 const heldKeys = new Set();
 window.addEventListener('keydown', e=>{ heldKeys.add(e.code); if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault(); });
 window.addEventListener('keyup', e=>{ heldKeys.delete(e.code); });
 
+let mouseWorld = {x:WORLD.width/2, y:WORLD.height/2};
+let mouseHeld = false;
+function updateMouseWorld(clientX, clientY){
+  const rect = canvas.getBoundingClientRect();
+  mouseWorld.x = (clientX-rect.left)/rect.width*WORLD.width;
+  mouseWorld.y = (clientY-rect.top)/rect.height*WORLD.height;
+}
+canvas.addEventListener('mousemove', e=> updateMouseWorld(e.clientX, e.clientY));
+canvas.addEventListener('mousedown', e=>{ if(e.button===0){ mouseHeld=true; ensureAudio(); } });
+window.addEventListener('mouseup', e=>{ if(e.button===0) mouseHeld=false; });
+canvas.addEventListener('contextmenu', e=> e.preventDefault());
+canvas.addEventListener('touchmove', e=>{ if(e.touches[0]){ updateMouseWorld(e.touches[0].clientX, e.touches[0].clientY); } }, {passive:true});
+canvas.addEventListener('touchstart', e=>{ if(e.touches[0]){ updateMouseWorld(e.touches[0].clientX, e.touches[0].clientY); mouseHeld=true; ensureAudio(); } }, {passive:true});
+window.addEventListener('touchend', ()=>{ mouseHeld=false; });
+
 function readLocalInput(){
   const left = heldKeys.has('KeyA')||heldKeys.has('ArrowLeft');
   const right = heldKeys.has('KeyD')||heldKeys.has('ArrowRight');
   const jump = heldKeys.has('KeyW')||heldKeys.has('ArrowUp')||heldKeys.has('Space');
-  const down = heldKeys.has('KeyS')||heldKeys.has('ArrowDown');
-  const attack = heldKeys.has('KeyF')||heldKeys.has('Enter')||heldKeys.has('KeyJ');
-  let g = {left:false,right:false,jump:false,down:false,attack:false};
+  const attack = heldKeys.has('KeyF')||heldKeys.has('Enter')||heldKeys.has('KeyJ')||mouseHeld;
+  let g = {left:false,right:false,jump:false,attack:false};
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = pads[0];
   if(pad){
@@ -575,13 +603,15 @@ function readLocalInput(){
     g.left = axis<-0.35 || (pad.buttons[14]&&pad.buttons[14].pressed);
     g.right = axis>0.35 || (pad.buttons[15]&&pad.buttons[15].pressed);
     g.jump = !!(pad.buttons[0]&&pad.buttons[0].pressed);
-    g.down = !!(pad.buttons[13]&&pad.buttons[13].pressed) || (pad.axes[1]||0)>0.6;
     g.attack = !!((pad.buttons[2]&&pad.buttons[2].pressed)||(pad.buttons[7]&&pad.buttons[7].pressed));
   }
-  return { left:left||g.left, right:right||g.right, jump:jump||g.jump, down:down||g.down, attack:attack||g.attack };
+  return { left:left||g.left, right:right||g.right, jump:jump||g.jump, attack:attack||g.attack };
 }
 setInterval(()=>{
-  if(uiState==='GAME'){ const inp = readLocalInput(); send(Object.assign({t:'input'}, inp)); }
+  if(uiState==='GAME' && myId){
+    const lp = netPlayers.get(myId);
+    if(lp) send({t:'move', x:lp.x, y:lp.y, vx:lp.vx, vy:lp.vy, facing:lp.facing, grounded:lp.grounded, aimAngle:lp.aimAngle, walkPhase:lp.walkPhase, attack:readLocalInput().attack});
+  }
 }, 33);
 window.addEventListener('keydown', e=>{
   if(e.code==='Enter' || e.code==='KeyF' || e.code==='Space'){
@@ -745,6 +775,10 @@ function frame(now){
     const localInput = uiState==='GAME' ? readLocalInput() : null;
     netPlayers.forEach(lp=>{
       const isSelf = lp.id===myId;
+      if(isSelf && lp.alive){
+        const ang = Math.atan2(mouseWorld.y-(lp.y-26), mouseWorld.x-lp.x);
+        lp.aimAngle = ang; lp.facing = Math.cos(ang)>=0 ? 1 : -1;
+      }
       if(isSelf && lp.alive && gameState==='FIGHT'){
         stepLocalPlayer(lp, localInput, dt);
       } else if(!isSelf){
