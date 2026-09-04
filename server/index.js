@@ -31,6 +31,14 @@ function broadcast(room, obj) {
     if (p && p._ws && p._ws.readyState === 1) p._ws.send(msg);
   });
 }
+function broadcastExcept(room, exceptId, obj) {
+  const msg = JSON.stringify(obj);
+  room.order.forEach(id => {
+    if (id === exceptId) return;
+    const p = room.players.get(id);
+    if (p && p._ws && p._ws.readyState === 1) p._ws.send(msg);
+  });
+}
 function lobbyPayload(room) {
   return {
     t: 'lobby', code: room.code,
@@ -95,9 +103,10 @@ wss.on('connection', (ws) => {
       if (room.state === 'LOBBY' && room.order[0] === playerId && room.connectedCount() >= 2 && readyCount === room.connectedCount()) {
         room.startMatch();
       }
-    } else if (msg.t === 'input') {
-      player.input.left = !!msg.left; player.input.right = !!msg.right;
-      player.input.jump = !!msg.jump; player.input.down = !!msg.down; player.input.attack = !!msg.attack;
+    } else if (msg.t === 'move') {
+      room.reportMove(playerId, msg);
+    } else if (msg.t === 'fx') {
+      broadcastExcept(room, playerId, { t: 'fx', kind: msg.kind, x: msg.x, y: msg.y, id: playerId });
     } else if (msg.t === 'continue') {
       if (room.state === 'SCOREBOARD') { room.resetRound(); room.state = 'COUNTDOWN'; room.stateTimer = 3.0; }
       else if (room.state === 'MATCHEND') { room.startMatch(); }
