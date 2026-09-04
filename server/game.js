@@ -1,16 +1,15 @@
 "use strict";
 /* ============================================================
-   STIKKAOS — server-side authoritative simulation.
-   Pure JS, no DOM/canvas/audio. The client only renders what
-   this module computes; the browser never decides the outcome
-   of a hit, so all connected players see the same result.
+   STIKKAOS — server-side simulation.
+   Movement is now fully client-owned: each client simulates its
+   own walking/jumping/wall-jumping/bounce-pads locally and just
+   reports its position here. The server never overrides that —
+   it only takes control during combat (weapons, projectiles,
+   explosions, damage/knockback) and round/match flow, which stay
+   fully authoritative so nobody can fake being hit or fake a kill.
    ============================================================ */
 
 const WORLD = { width: 1280, height: 720 };
-const HALF_W = 15, FOOT_OFFSET = 34, HEAD_TOP_OFFSET = -56;
-const GRAVITY = 1650, MAX_FALL = 1500;
-const GROUND_ACCEL = 3400, AIR_ACCEL = 1900, MAX_SPEED = 360;
-const JUMP_VEL = -820, WALL_JUMP_VX = 440, WALL_JUMP_VY = -760, WALL_SLIDE_CAP = 240;
 const ROUNDS_TO_WIN = 3;
 const TICK_DT = 1 / 30;
 
@@ -27,6 +26,7 @@ const WEAPONS = {
   rocket:  { name: 'Raketkaster', type: 'ranged', dmg: 2, splashDmg: 36, splashRadius: 150, cooldown: 1.05, ammo: 3, speed: 640, gravity: 0.3, spread: 0.015, explosive: true }
 };
 const PICKUP_POOL = ['bat', 'pistol', 'smg', 'shotgun', 'sniper', 'rocket'];
+const MELEE_CONE = 0.95; // radians either side of aim angle
 
 function mkPlatform(x, y, w, h, opts) {
   const p = { x, y, w, h, baseX: x, baseY: y };
@@ -83,8 +83,8 @@ function ARENAS_DEF() { return [
 
 function randomArena() { const l = ARENAS_DEF(); return l[Math.floor(Math.random() * l.length)]; }
 function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
-function rectsOverlap(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
-function getBox(e) { return { x: e.x - HALF_W, y: e.y + HEAD_TOP_OFFSET, w: HALF_W * 2, h: FOOT_OFFSET - HEAD_TOP_OFFSET }; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function angleDiff(a, b) { let d = Math.abs(a - b) % (Math.PI * 2); if (d > Math.PI) d = Math.PI * 2 - d; return d; }
 
 class Room {
   constructor(code) {
@@ -101,7 +101,6 @@ class Room {
     this.dropTimer = 0;
     this.events = [];
     this.roundMessage = '';
-    this.hazardAccum = new Map();
   }
 
   addPlayer(id, name) {
@@ -110,11 +109,9 @@ class Room {
     const p = {
       id, idx, name: (name || NAMES_FALLBACK[idx]).slice(0, 14), color: COLORS[idx],
       ready: false, connected: true,
-      x: 100, y: 100, vx: 0, vy: 0, facing: 1, grounded: false, standingPlatform: null, touchWallDir: 0,
+      x: 100, y: 100, vx: 0, vy: 0, facing: 1, grounded: false, aimAngle: 0,
       damage: 0, alive: true, weapon: 'fists', ammo: 0, attackCooldown: 0, ragdollTimer: 0,
-      invuln: 0, walkPhase: 0, roundWins: 0, aimUp: false, aimDown: false,
-      input: { left: false, right: false, jump: false, down: false, attack: false },
-      prevInput: { jump: false, attack: false }
+      invuln: 0, walkPhase: 0, roundWins: 0, attackHeld: false
     };
     this.players.set(id, p);
     this.order.push(id);
@@ -143,32 +140,36 @@ class Room {
       const p = this.players.get(id);
       if (!p) return;
       const spawn = sp[i % sp.length];
-      p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.grounded = false; p.standingPlatform = null;
-      p.touchWallDir = 0; p.damage = 0; p.alive = p.connected; p.weapon = 'fists'; p.ammo = 0;
-      p.attackCooldown = 0; p.ragdollTimer = 0; p.invuln = 1.2;
+      p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.grounded = false;
+      p.damage = 0; p.alive = p.connected; p.weapon = 'fists'; p.ammo = 0;
+      p.attackCooldown = 0; p.ragdollTimer = 0; p.invuln = 1.2; p.attackHeld = false;
       p.facing = spawn.x < WORLD.width / 2 ? 1 : -1;
+      p.aimAngle = p.facing > 0 ? 0 : Math.PI;
     });
     this.projectiles = []; this.fallingCrates = []; this.pickups = [];
     this.dropTimer = 1.2 + Math.random() * 1.8;
     this.arena.platforms.forEach(pl => { pl.x = pl.baseX; pl.y = pl.baseY; });
-    this.hazardAccum.clear();
   }
 
-  applyHazardTick(player, plat) {
-    const acc = (this.hazardAccum.get(player.id) || 0) + TICK_DT;
-    this.hazardAccum.set(player.id, acc);
-    if (acc >= 0.35) {
-      this.hazardAccum.set(player.id, 0);
-      this.dealDamage(player, plat.dps * 0.35, { x: player.x, y: player.y + 40 }, null, 60);
-    }
+  /** Called whenever a client reports its own movement/pose. Trusted, lightly sanity-clamped. */
+  reportMove(playerId, data) {
+    const p = this.players.get(playerId);
+    if (!p || !p.alive) return;
+    p.x = clamp(Number(data.x) || 0, -400, WORLD.width + 400);
+    p.y = clamp(Number(data.y) || 0, -1200, WORLD.height + 1200);
+    p.vx = clamp(Number(data.vx) || 0, -2200, 2200);
+    p.vy = clamp(Number(data.vy) || 0, -2600, 2600);
+    p.facing = data.facing === -1 ? -1 : 1;
+    p.grounded = !!data.grounded;
+    if (typeof data.aimAngle === 'number' && isFinite(data.aimAngle)) p.aimAngle = data.aimAngle;
+    if (typeof data.walkPhase === 'number' && isFinite(data.walkPhase)) p.walkPhase = data.walkPhase;
+    p.attackHeld = !!data.attack;
   }
 
   launch(player, dirx, diry, power) {
     const mag = Math.hypot(dirx, diry) || 1;
-    player.vx += (dirx / mag) * power;
-    player.vy += (diry / mag) * power - power * 0.18;
     player.ragdollTimer = Math.min(1.5, 0.4 + power * 0.0018);
-    this.events.push({ t: 'hit', id: player.id, dirx, diry, power });
+    this.events.push({ t: 'hit', id: player.id, dirx: dirx / mag, diry: diry / mag, power });
   }
 
   dealDamage(target, amount, sourcePos, sourceVel, baseKnock) {
@@ -209,28 +210,29 @@ class Room {
   meleeAttack(p) {
     const w = WEAPONS[p.weapon];
     this.events.push({ t: 'melee', id: p.id, weapon: p.weapon });
+    const originX = p.x, originY = p.y - 26;
     this.order.forEach(id => {
       if (id === p.id) return;
       const target = this.players.get(id);
       if (!target || !target.alive) return;
-      const forward = (target.x - p.x) * p.facing;
-      if (forward > -10 && forward < w.range && Math.abs((target.y - 30) - (p.y - 30)) < 70) {
-        this.dealDamage(target, w.dmg, { x: p.x - p.facing * 40, y: p.y - 30 }, { x: p.facing * 380, y: -160 }, w.knockback);
-      }
+      const dx = target.x - originX, dy = (target.y - 26) - originY;
+      const d = Math.hypot(dx, dy);
+      if (d > w.range + 22) return;
+      if (angleDiff(Math.atan2(dy, dx), p.aimAngle) > MELEE_CONE) return;
+      this.dealDamage(target, w.dmg, { x: originX, y: originY },
+        { x: Math.cos(p.aimAngle) * 380, y: Math.sin(p.aimAngle) * 380 - 100 }, w.knockback);
     });
   }
 
   shootWeapon(p) {
     const w = WEAPONS[p.weapon];
-    const originX = p.x + p.facing * 22, originY = p.y - 42;
-    let baseAngle = 0;
-    if (p.aimUp) baseAngle = -0.62; else if (p.aimDown && !p.grounded) baseAngle = 0.62;
+    const originX = p.x + Math.cos(p.aimAngle) * 28, originY = (p.y - 26) + Math.sin(p.aimAngle) * 28;
     const pellets = w.pellets || 1;
     this.events.push({ t: 'shot', id: p.id, weapon: p.weapon, x: originX, y: originY });
     for (let i = 0; i < pellets; i++) {
       const spread = (Math.random() * 2 - 1) * w.spread + (pellets > 1 ? (i - (pellets - 1) / 2) * 0.055 : 0);
-      const angle = baseAngle + spread;
-      const dirx = Math.cos(angle) * p.facing, diry = Math.sin(angle);
+      const angle = p.aimAngle + spread;
+      const dirx = Math.cos(angle), diry = Math.sin(angle);
       this.projectiles.push({
         id: Math.random().toString(36).slice(2, 9),
         x: originX, y: originY, vx: dirx * w.speed, vy: diry * w.speed,
@@ -243,7 +245,7 @@ class Room {
   }
 
   tryAttack(p) {
-    if (p.attackCooldown > 0 || !p.input.attack) return;
+    if (p.attackCooldown > 0) return;
     const w = WEAPONS[p.weapon];
     p.attackCooldown = w.cooldown;
     if (w.type === 'melee') this.meleeAttack(p); else this.shootWeapon(p);
@@ -252,56 +254,9 @@ class Room {
   updateMovingPlatforms(dt) {
     for (const pl of this.arena.platforms) {
       if (!pl.moving) continue;
-      const old = pl.x;
-      if (pl.moving.axis === 'x') {
-        pl.x = pl.baseX + Math.sin(this.elapsed * pl.moving.speed + pl.moving.phase) * pl.moving.range;
-        pl.deltaX = pl.x - old; pl.deltaY = 0;
-      } else {
-        const oldY = pl.y;
-        pl.y = pl.baseY + Math.sin(this.elapsed * pl.moving.speed + pl.moving.phase) * pl.moving.range;
-        pl.deltaY = pl.y - oldY; pl.deltaX = 0;
-      }
+      if (pl.moving.axis === 'x') pl.x = pl.baseX + Math.sin(this.elapsed * pl.moving.speed + pl.moving.phase) * pl.moving.range;
+      else pl.y = pl.baseY + Math.sin(this.elapsed * pl.moving.speed + pl.moving.phase) * pl.moving.range;
     }
-  }
-
-  moveAndCollide(e, dt) {
-    if (e.grounded && e.standingPlatform && e.standingPlatform.moving) {
-      e.x += e.standingPlatform.deltaX || 0;
-      e.y += e.standingPlatform.deltaY || 0;
-    }
-    e.touchWallDir = 0;
-    e.x += e.vx * dt;
-    let box = getBox(e);
-    for (const pl of this.arena.platforms) {
-      if (rectsOverlap(box, pl)) {
-        if (e.vx > 0) { e.x = pl.x - HALF_W - 0.01; e.touchWallDir = 1; }
-        else if (e.vx < 0) { e.x = pl.x + pl.w + HALF_W + 0.01; e.touchWallDir = -1; }
-        e.vx = 0;
-        box = getBox(e);
-      }
-    }
-    e.grounded = false; e.standingPlatform = null;
-    e.y += e.vy * dt;
-    box = getBox(e);
-    for (const pl of this.arena.platforms) {
-      if (rectsOverlap(box, pl)) {
-        if (e.vy >= 0) {
-          if (pl.bouncePad) {
-            e.y = pl.y - FOOT_OFFSET - 0.01;
-            e.vy = -pl.bounceForce;
-            e.grounded = false; e.standingPlatform = null;
-            this.events.push({ t: 'bounce', id: e.id, x: e.x, y: pl.y });
-          } else {
-            e.y = pl.y - FOOT_OFFSET - 0.01; e.vy = 0; e.grounded = true; e.standingPlatform = pl;
-            if (pl.hazard) this.applyHazardTick(e, pl);
-          }
-        } else {
-          e.y = pl.y + pl.h - HEAD_TOP_OFFSET + 0.01; e.vy = 0;
-        }
-        box = getBox(e);
-      }
-    }
-    if (!e.grounded && e.touchWallDir !== 0 && e.vy > 0) e.vy = Math.min(e.vy, WALL_SLIDE_CAP);
   }
 
   spawnFallingCrate() {
@@ -348,38 +303,17 @@ class Room {
     if (this.state !== 'FIGHT') return;
 
     this.elapsed += dt;
-    this.updateMovingPlatforms(dt);
+    this.updateMovingPlatforms(dt); // kept accurate server-side so projectiles still hit moving platforms correctly
 
     this.order.forEach(id => {
       const p = this.players.get(id);
       if (!p) return;
       if (p.attackCooldown > 0) p.attackCooldown -= dt;
       if (p.invuln > 0) p.invuln -= dt;
+      if (p.ragdollTimer > 0) p.ragdollTimer -= dt;
       if (!p.alive) return;
 
-      const input = p.input, prev = p.prevInput;
-      const accel = p.grounded ? GROUND_ACCEL : AIR_ACCEL;
-      if (input.left && !input.right) { p.vx -= accel * dt; p.facing = -1; }
-      else if (input.right && !input.left) { p.vx += accel * dt; p.facing = 1; }
-      else if (p.grounded) { p.vx *= 0.78; if (Math.abs(p.vx) < 8) p.vx = 0; }
-      p.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, p.vx));
-
-      if (input.jump && !prev.jump && p.ragdollTimer <= 0) {
-        if (p.grounded) { p.vy = JUMP_VEL; p.grounded = false; this.events.push({ t: 'jump', id: p.id }); }
-        else if (p.touchWallDir !== 0) {
-          p.vx = -p.touchWallDir * WALL_JUMP_VX; p.vy = WALL_JUMP_VY; p.facing = -p.touchWallDir; p.touchWallDir = 0;
-          this.events.push({ t: 'jump', id: p.id });
-        }
-      }
-      p.aimDown = !!(input.down && !p.grounded);
-      p.aimUp = !!(input.jump && !input.down);
-
-      p.vy += GRAVITY * dt; p.vy = Math.min(p.vy, MAX_FALL);
-      this.moveAndCollide(p, dt);
-      if (p.ragdollTimer > 0) p.ragdollTimer -= dt;
-      p.walkPhase += dt * (p.grounded ? Math.abs(p.vx) * 0.02 : 0);
-
-      this.tryAttack(p);
+      if (p.attackHeld) this.tryAttack(p);
 
       if (p.weapon === 'fists') {
         for (let i = this.pickups.length - 1; i >= 0; i--) {
@@ -393,7 +327,6 @@ class Room {
         }
       }
       this.checkElimination(p);
-      p.prevInput = { jump: input.jump, attack: input.attack };
     });
 
     this.dropTimer -= dt;
@@ -452,10 +385,9 @@ class Room {
         const p = this.players.get(id); if (!p) return null;
         return {
           id: p.id, idx: p.idx, name: p.name, color: p.color, connected: p.connected,
-          x: p.x, y: p.y, vx: p.vx, vy: p.vy, facing: p.facing, grounded: p.grounded,
+          x: p.x, y: p.y, vx: p.vx, vy: p.vy, facing: p.facing, grounded: p.grounded, aimAngle: p.aimAngle,
           damage: Math.round(p.damage), alive: p.alive, weapon: p.weapon, ammo: p.ammo,
-          ragdollTimer: p.ragdollTimer, walkPhase: p.walkPhase, roundWins: p.roundWins,
-          aimUp: p.aimUp, aimDown: p.aimDown, invuln: p.invuln
+          ragdollTimer: p.ragdollTimer, walkPhase: p.walkPhase, roundWins: p.roundWins, invuln: p.invuln
         };
       }).filter(Boolean),
       projectiles: this.projectiles.map(pr => ({ x: pr.x, y: pr.y, vx: pr.vx, vy: pr.vy, weapon: pr.weapon, explosive: pr.explosive })),
