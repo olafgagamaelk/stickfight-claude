@@ -70,24 +70,34 @@ const sfx = {
 function mkPlatform(x,y,w,h,opts){ const p={x,y,w,h,baseX:x,baseY:y}; if(opts) Object.assign(p,opts); return p; }
 const ARENA_DEFS = {
   dock: { name:'Havneterminal', platforms:[
-    mkPlatform(0,650,520,70), mkPlatform(760,650,520,70),
-    mkPlatform(530,430,220,24), mkPlatform(50,480,150,24), mkPlatform(1080,480,150,24),
-    mkPlatform(560,240,160,24),
-    mkPlatform(500,430,24,220,{wall:true}), mkPlatform(756,430,24,220,{wall:true})
+    mkPlatform(0,650,500,70), mkPlatform(780,650,500,70),
+    mkPlatform(500,410,280,24), mkPlatform(40,470,170,24), mkPlatform(1070,470,170,24),
+    mkPlatform(550,210,180,22,{moving:{axis:'x',range:150,speed:0.8,phase:0}}),
+    mkPlatform(500,410,24,240,{wall:true}), mkPlatform(756,410,24,240,{wall:true})
   ]},
   towers: { name:'Tårnene', platforms:[
-    mkPlatform(440,650,400,70), mkPlatform(140,520,220,22), mkPlatform(920,520,220,22),
-    mkPlatform(40,360,200,22), mkPlatform(1040,360,200,22),
-    mkPlatform(430,250,200,22,{moving:{axis:'x',range:230,speed:1.1,phase:0}}),
-    mkPlatform(520,110,240,22),
-    mkPlatform(340,130,20,230,{wall:true}), mkPlatform(920,130,20,230,{wall:true})
+    mkPlatform(440,650,400,70), mkPlatform(120,520,240,22), mkPlatform(920,520,240,22),
+    mkPlatform(30,360,210,22), mkPlatform(1040,360,210,22),
+    mkPlatform(560,300,90,20),
+    mkPlatform(420,240,220,22,{moving:{axis:'x',range:240,speed:1.1,phase:0}}),
+    mkPlatform(500,110,280,22),
+    mkPlatform(330,130,20,230,{wall:true}), mkPlatform(930,130,20,230,{wall:true})
   ]},
   bridge: { name:'Broen', platforms:[
-    mkPlatform(30,620,260,40), mkPlatform(380,620,260,40), mkPlatform(720,620,260,40), mkPlatform(1060,620,190,40),
-    mkPlatform(150,440,190,22), mkPlatform(930,440,190,22),
-    mkPlatform(440,320,200,22,{moving:{axis:'x',range:180,speed:0.9,phase:1.6}}),
+    mkPlatform(20,620,260,40), mkPlatform(380,620,260,40), mkPlatform(720,620,260,40), mkPlatform(1060,620,200,40),
+    mkPlatform(290,560,70,20), mkPlatform(900,560,70,20),
+    mkPlatform(140,430,200,22), mkPlatform(920,430,200,22),
+    mkPlatform(440,310,200,22,{moving:{axis:'x',range:190,speed:0.9,phase:1.6}}),
     mkPlatform(640,655,80,20,{bouncePad:true,bounceForce:1350}),
-    mkPlatform(605,500,20,155,{wall:true}), mkPlatform(755,500,20,155,{wall:true})
+    mkPlatform(600,480,20,175,{wall:true}), mkPlatform(760,480,20,175,{wall:true})
+  ]},
+  factory: { name:'Fabrikken', platforms:[
+    mkPlatform(0,600,380,50), mkPlatform(900,600,380,50),
+    mkPlatform(60,440,220,22), mkPlatform(1000,440,220,22),
+    mkPlatform(500,380,280,24),
+    mkPlatform(560,190,160,22),
+    mkPlatform(520,380,20,220,{wall:true}), mkPlatform(740,380,20,220,{wall:true}),
+    mkPlatform(560,660,160,20,{bouncePad:true,bounceForce:1400})
   ]}
 };
 let currentArena = null; // set when arenaId known
@@ -340,6 +350,32 @@ function connect(){
 }
 function send(obj){ if(ws && ws.readyState===1) ws.send(JSON.stringify(obj)); }
 
+/**
+ * Connects (or reuses an open connection) and calls fn() once ready.
+ * Retries with backoff if the connection fails to open — this covers the
+ * common case where a free Render server is still waking up from sleep
+ * (which can take 20-60s and sometimes shows a "verifying you're not a
+ * robot" page first). Without this, a cold server would just look like
+ * an instant failure and kick the player back to the menu.
+ */
+function connectWithRetry(fn, attempt){
+  attempt = attempt||0;
+  if(ws && ws.readyState===1){ fn(); return; }
+  showMenuError(attempt===0 ? '' : 'Forbinder til serveren... (den kan være ved at vågne op, det tager op til et minut)');
+  connect();
+  const to = setTimeout(()=>{
+    cleanup();
+    if(attempt<7){ connectWithRetry(fn, attempt+1); }
+    else showMenuError('Kunne ikke forbinde til serveren. Prøv igen om lidt.');
+  }, Math.min(2000+attempt*1500, 8000));
+  function onOpen(){ cleanup(); showMenuError(''); fn(); }
+  function onCloseOrErr(){ cleanup(); clearTimeout(to); if(attempt<7) setTimeout(()=>connectWithRetry(fn, attempt+1), 600); else showMenuError('Kunne ikke forbinde til serveren. Prøv igen om lidt.'); }
+  function cleanup(){ clearTimeout(to); ws.removeEventListener('open', onOpen); ws.removeEventListener('close', onCloseOrErr); ws.removeEventListener('error', onCloseOrErr); }
+  ws.addEventListener('open', onOpen, {once:true});
+  ws.addEventListener('close', onCloseOrErr, {once:true});
+  ws.addEventListener('error', onCloseOrErr, {once:true});
+}
+
 function handleMessage(msg){
   if(msg.t==='joined'){
     myId = msg.id; myIdx = msg.you; roomCode = msg.code;
@@ -368,6 +404,7 @@ function handleMessage(msg){
 }
 
 function applySnapshot(snap){
+  const enteringCountdown = (snap.state==='COUNTDOWN' && gameState!=='COUNTDOWN');
   gameState = snap.state; stateTimer = snap.stateTimer; roundMessage = snap.roundMessage;
   elapsedServerTime = snap.elapsed;
   if(snap.arenaId && (!currentArena || currentArena._id!==snap.arenaId)){
@@ -398,6 +435,12 @@ function applySnapshot(snap){
         lp.targetX = sp.x; lp.targetY = sp.y; lp.recvTime = now;
         lp.facing=sp.facing; lp.grounded=sp.grounded; lp.aimAngle=sp.aimAngle||0;
         lp.walkPhase=sp.walkPhase;
+      } else if(enteringCountdown){
+        // a fresh round just reset us server-side — snap our own local sim to that spawn point too,
+        // otherwise we'd keep reporting our old (fallen-off-map) position and get eliminated instantly.
+        lp.x=sp.x; lp.y=sp.y; lp.vx=0; lp.vy=0; lp.grounded=false; lp.touchWallDir=0;
+        lp.ragdollTimer=0; lp.hitFlash=0; lp.attackFlash=0; lp._prevJump=false;
+        initSkeleton(lp);
       }
       // self: x/y/vx/vy/facing/grounded/walkPhase/aimAngle are fully owned by local prediction —
       // the server never overrides normal movement, only combat outcomes (via events below).
@@ -470,8 +513,7 @@ function showMenuError(msg){
   const fe = document.getElementById('findRoomsError'); if(fe) fe.textContent = msg||'';
 }
 function withConnection(fn){
-  if(!ws || ws.readyState!==1){ connect(); ws.addEventListener('open', fn, {once:true}); }
-  else fn();
+  connectWithRetry(fn);
 }
 
 document.getElementById('btn-create').onclick = ()=>{
@@ -622,11 +664,52 @@ window.addEventListener('keydown', e=>{
 /* ============================================================
    RENDERING
    ============================================================ */
+const ARENA_THEMES = {
+  dock:    { top:'#16222c', bottom:'#0a1014', accent:'#3a5a70' },
+  towers:  { top:'#241a33', bottom:'#0c0812', accent:'#5a3a70' },
+  bridge:  { top:'#3a2418', bottom:'#120a08', accent:'#c06a34' },
+  factory: { top:'#1c2018', bottom:'#08090a', accent:'#4a5a3a' }
+};
+function drawDockScenery(){
+  let x=-10;
+  for(let i=0;i<11;i++){ const w=70+((i*37)%40), h=40+((i*23)%50); ctx.fillRect(x, WORLD.height-h-4, w, h); x+=w+8; }
+  ctx.fillRect(1150,120,10,400); ctx.fillRect(1000,110,160,10); ctx.fillRect(1140,105,30,20);
+}
+function drawTowersScenery(){
+  ctx.beginPath(); ctx.arc(1080,90,40,0,Math.PI*2); ctx.fill();
+  let x=-20;
+  for(let i=0;i<14;i++){ const w=50+((i*31)%35), h=90+((i*53)%260); ctx.fillRect(x, WORLD.height-h-4, w, h); x+=w+6; }
+}
+function drawBridgeScenery(){
+  ctx.beginPath(); ctx.arc(1000,140,50,0,Math.PI*2); ctx.fill();
+  ctx.fillRect(150,180,16,300); ctx.fillRect(1100,180,16,300);
+  ctx.lineWidth=6; ctx.strokeStyle=ctx.fillStyle;
+  ctx.beginPath(); ctx.moveTo(150,220); ctx.quadraticCurveTo(640,80,1116,220); ctx.stroke();
+  for(let i=0;i<8;i++){ ctx.fillRect(60+i*140, WORLD.height-30-((i%3)*8), 90, 3); }
+}
+function drawFactoryScenery(){
+  for(let i=0;i<3;i++){
+    const x=120+i*380;
+    ctx.fillRect(x,WORLD.height-260,40,260);
+    ctx.beginPath(); ctx.ellipse(x+20,WORLD.height-262,26,10,0,0,Math.PI*2); ctx.fill();
+  }
+  ctx.fillRect(0,WORLD.height-40,WORLD.width,10);
+}
 function drawBackground(){
+  const id = currentArena && currentArena._id;
+  const th = ARENA_THEMES[id] || {top:'#181c26',bottom:'#0a0b10',accent:'#333'};
   const g = ctx.createLinearGradient(0,0,0,WORLD.height);
-  g.addColorStop(0,'#181c26'); g.addColorStop(1,'#0a0b10');
+  g.addColorStop(0,th.top); g.addColorStop(1,th.bottom);
   ctx.fillStyle = g; ctx.fillRect(0,0,WORLD.width,WORLD.height);
-  ctx.save(); ctx.globalAlpha=0.06;
+
+  ctx.save(); ctx.globalAlpha=0.35; ctx.fillStyle=th.accent;
+  if(id==='dock') drawDockScenery();
+  else if(id==='towers') drawTowersScenery();
+  else if(id==='bridge') drawBridgeScenery();
+  else if(id==='factory') drawFactoryScenery();
+  ctx.restore();
+
+  ctx.save(); ctx.globalAlpha=0.05;
   for(let i=0;i<WORLD.width;i+=60){ ctx.strokeStyle='#fff'; ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,WORLD.height); ctx.stroke(); }
   ctx.restore();
 }
