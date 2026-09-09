@@ -37,47 +37,65 @@ function ARENAS_DEF() { return [
   {
     id: 'dock', name: 'Havneterminal',
     platforms: [
-      mkPlatform(0, 650, 520, 70),
-      mkPlatform(760, 650, 520, 70),
-      mkPlatform(530, 430, 220, 24),
-      mkPlatform(50, 480, 150, 24),
-      mkPlatform(1080, 480, 150, 24),
-      mkPlatform(560, 240, 160, 24),
-      mkPlatform(500, 430, 24, 220, { wall: true }),
-      mkPlatform(756, 430, 24, 220, { wall: true })
+      mkPlatform(0, 650, 500, 70),
+      mkPlatform(780, 650, 500, 70),
+      mkPlatform(500, 410, 280, 24),
+      mkPlatform(40, 470, 170, 24),
+      mkPlatform(1070, 470, 170, 24),
+      mkPlatform(550, 210, 180, 22, { moving: { axis: 'x', range: 150, speed: 0.8, phase: 0 } }),
+      mkPlatform(500, 410, 24, 240, { wall: true }),
+      mkPlatform(756, 410, 24, 240, { wall: true })
     ],
-    spawnPoints: [{ x: 150, y: 600 }, { x: 1130, y: 600 }, { x: 600, y: 380 }, { x: 680, y: 380 }]
+    spawnPoints: [{ x: 150, y: 600 }, { x: 1130, y: 600 }, { x: 610, y: 350 }, { x: 690, y: 350 }]
   },
   {
     id: 'towers', name: 'Tårnene',
     platforms: [
       mkPlatform(440, 650, 400, 70),
-      mkPlatform(140, 520, 220, 22),
-      mkPlatform(920, 520, 220, 22),
-      mkPlatform(40, 360, 200, 22),
-      mkPlatform(1040, 360, 200, 22),
-      mkPlatform(430, 250, 200, 22, { moving: { axis: 'x', range: 230, speed: 1.1, phase: 0 } }),
-      mkPlatform(520, 110, 240, 22),
-      mkPlatform(340, 130, 20, 230, { wall: true }),
-      mkPlatform(920, 130, 20, 230, { wall: true })
+      mkPlatform(120, 520, 240, 22),
+      mkPlatform(920, 520, 240, 22),
+      mkPlatform(30, 360, 210, 22),
+      mkPlatform(1040, 360, 210, 22),
+      mkPlatform(560, 300, 90, 20),
+      mkPlatform(420, 240, 220, 22, { moving: { axis: 'x', range: 240, speed: 1.1, phase: 0 } }),
+      mkPlatform(500, 110, 280, 22),
+      mkPlatform(330, 130, 20, 230, { wall: true }),
+      mkPlatform(930, 130, 20, 230, { wall: true })
     ],
     spawnPoints: [{ x: 200, y: 470 }, { x: 980, y: 470 }, { x: 90, y: 310 }, { x: 1090, y: 310 }]
   },
   {
     id: 'bridge', name: 'Broen',
     platforms: [
-      mkPlatform(30, 620, 260, 40),
+      mkPlatform(20, 620, 260, 40),
       mkPlatform(380, 620, 260, 40),
       mkPlatform(720, 620, 260, 40),
-      mkPlatform(1060, 620, 190, 40),
-      mkPlatform(150, 440, 190, 22),
-      mkPlatform(930, 440, 190, 22),
-      mkPlatform(440, 320, 200, 22, { moving: { axis: 'x', range: 180, speed: 0.9, phase: 1.6 } }),
+      mkPlatform(1060, 620, 200, 40),
+      mkPlatform(290, 560, 70, 20),
+      mkPlatform(900, 560, 70, 20),
+      mkPlatform(140, 430, 200, 22),
+      mkPlatform(920, 430, 200, 22),
+      mkPlatform(440, 310, 200, 22, { moving: { axis: 'x', range: 190, speed: 0.9, phase: 1.6 } }),
       mkPlatform(640, 655, 80, 20, { bouncePad: true, bounceForce: 1350 }),
-      mkPlatform(605, 500, 20, 155, { wall: true }),
-      mkPlatform(755, 500, 20, 155, { wall: true })
+      mkPlatform(600, 480, 20, 175, { wall: true }),
+      mkPlatform(760, 480, 20, 175, { wall: true })
     ],
-    spawnPoints: [{ x: 150, y: 560 }, { x: 1100, y: 560 }, { x: 220, y: 380 }, { x: 1000, y: 380 }]
+    spawnPoints: [{ x: 150, y: 560 }, { x: 1100, y: 560 }, { x: 220, y: 370 }, { x: 1000, y: 370 }]
+  },
+  {
+    id: 'factory', name: 'Fabrikken',
+    platforms: [
+      mkPlatform(0, 600, 380, 50),
+      mkPlatform(900, 600, 380, 50),
+      mkPlatform(60, 440, 220, 22),
+      mkPlatform(1000, 440, 220, 22),
+      mkPlatform(500, 380, 280, 24),
+      mkPlatform(560, 190, 160, 22),
+      mkPlatform(520, 380, 20, 220, { wall: true }),
+      mkPlatform(740, 380, 20, 220, { wall: true }),
+      mkPlatform(560, 660, 160, 20, { bouncePad: true, bounceForce: 1400 })
+    ],
+    spawnPoints: [{ x: 150, y: 540 }, { x: 1130, y: 540 }, { x: 170, y: 380 }, { x: 1110, y: 380 }]
   }
 ];}
 
