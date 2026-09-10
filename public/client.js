@@ -72,6 +72,7 @@ const ARENA_DEFS = {
   dock: { name:'Havneterminal', platforms:[
     mkPlatform(0,650,500,70), mkPlatform(780,650,500,70),
     mkPlatform(500,410,280,24), mkPlatform(40,470,170,24), mkPlatform(1070,470,170,24),
+    mkPlatform(250,560,90,20), mkPlatform(940,560,90,20),
     mkPlatform(550,210,180,22,{moving:{axis:'x',range:150,speed:0.8,phase:0}}),
     mkPlatform(500,410,24,240,{wall:true}), mkPlatform(756,410,24,240,{wall:true})
   ]},
@@ -94,6 +95,7 @@ const ARENA_DEFS = {
   factory: { name:'Fabrikken', platforms:[
     mkPlatform(0,600,380,50), mkPlatform(900,600,380,50),
     mkPlatform(60,440,220,22), mkPlatform(1000,440,220,22),
+    mkPlatform(310,520,80,20), mkPlatform(890,520,80,20),
     mkPlatform(500,380,280,24),
     mkPlatform(560,190,160,22),
     mkPlatform(520,380,20,220,{wall:true}), mkPlatform(740,380,20,220,{wall:true}),
@@ -146,15 +148,39 @@ function initSkeleton(p){
 }
 function poseTargets(p){
   const hx=p.x, hy=p.y, f=p.facing;
+  const aimAngle = p.aimAngle||0;
+
+  if(p.crouching){
+    const neck = {x:hx+f*20, y:hy-8};
+    const t = { hip:{x:hx,y:hy}, neck, head:{x:hx+f*38, y:hy-6} };
+    t.lKnee = {x:hx-f*8, y:hy+8};
+    t.lFoot = {x:hx-f*28, y:hy+12};
+    t.rKnee = {x:hx+f*18, y:hy+10};
+    t.rFoot = {x:hx+f*40, y:hy+12};
+    t.lElbow = {x:hx+f*8, y:hy-6};
+    t.lHand = {x:hx+f*18, y:hy-4};
+    t.rElbow = {x:neck.x+Math.cos(aimAngle)*10, y:neck.y+Math.sin(aimAngle)*10-4};
+    t.rHand  = {x:neck.x+Math.cos(aimAngle)*24, y:neck.y+Math.sin(aimAngle)*24};
+    return t;
+  }
+
   const neck = {x:hx,y:hy-26};
   const t = { hip:{x:hx,y:hy}, neck, head:{x:hx,y:hy-40} };
+
+  if(p.blocking){
+    t.lKnee = {x:hx-8, y:hy+16}; t.lFoot = {x:hx-10, y:hy+34};
+    t.rKnee = {x:hx+8, y:hy+16}; t.rFoot = {x:hx+10, y:hy+34};
+    t.lElbow = {x:hx-f*2, y:neck.y-14}; t.lHand = {x:hx+f*9, y:neck.y-18};
+    t.rElbow = {x:hx+f*3, y:neck.y-16}; t.rHand = {x:hx+f*15, y:neck.y-16};
+    return t;
+  }
+
   const swingA = Math.sin(p.walkPhase), swingB = Math.sin(p.walkPhase+Math.PI);
   const airSpread = p.grounded ? 0 : 10;
   t.lKnee = {x:hx-10+swingA*8, y:hy+16};
   t.lFoot = {x:hx-12+swingA*17-airSpread, y:hy+34};
   t.rKnee = {x:hx+10+swingB*8, y:hy+16};
   t.rFoot = {x:hx+12+swingB*17+airSpread, y:hy+34};
-  const aimAngle = p.aimAngle||0;
   if(p.weapon!=='fists'){
     t.rElbow={x:neck.x+Math.cos(aimAngle)*16, y:neck.y+Math.sin(aimAngle)*16};
     t.rHand ={x:neck.x+Math.cos(aimAngle)*32, y:neck.y+Math.sin(aimAngle)*32};
@@ -239,8 +265,12 @@ function ragdollImpulse(p, dirx, diry, power){
    ============================================================ */
 const GRAVITY=1650, MAX_FALL=1500, GROUND_ACCEL=3400, AIR_ACCEL=1900, MAX_SPEED=360;
 const JUMP_VEL=-820, WALL_JUMP_VX=440, WALL_JUMP_VY=-760, WALL_SLIDE_CAP=240;
+const CROUCH_TOP_OFFSET=-30;
 function sendFx(kind,x,y){ send({t:'fx', kind, x, y}); }
-function localGetBox(e){ return {x:e.x-HALF_W, y:e.y+HEAD_TOP_OFFSET, w:HALF_W*2, h:FOOT_OFFSET-HEAD_TOP_OFFSET}; }
+function localGetBox(e){
+  const top = e.crouching ? CROUCH_TOP_OFFSET : HEAD_TOP_OFFSET;
+  return {x:e.x-HALF_W, y:e.y+top, w:HALF_W*2, h:FOOT_OFFSET-top};
+}
 function localRectsOverlap(a,b){ return a.x<b.x+b.w && a.x+a.w>b.x && a.y<b.y+b.h && a.y+a.h>b.y; }
 function localMoveAndCollide(e, dt){
   if(!currentArena) return;
@@ -266,7 +296,7 @@ function localMoveAndCollide(e, dt){
           sfx.jump(); sfx.land(); spawnParticles(e.x, pl.y, 14, '#7CFC00', 260, 0.4, 500);
           sendFx('bounce', e.x, pl.y);
         } else { e.y=pl.y-FOOT_OFFSET-0.01; e.vy=0; e.grounded=true; }
-      } else { e.y = pl.y+pl.h-HEAD_TOP_OFFSET+0.01; e.vy=0; }
+      } else { const top = e.crouching?CROUCH_TOP_OFFSET:HEAD_TOP_OFFSET; e.y = pl.y+pl.h-top+0.01; e.vy=0; }
       box = localGetBox(e);
     }
   }
@@ -275,13 +305,19 @@ function localMoveAndCollide(e, dt){
   if(!e.grounded && e.touchWallDir!==0 && e.vy>0) e.vy=Math.min(e.vy, WALL_SLIDE_CAP);
 }
 function stepLocalPlayer(lp, input, dt){
+  lp.crouching = !!(input.down && lp.grounded && !lp.blocking);
+  lp.blocking = !!input.block;
+
+  let maxSp = MAX_SPEED;
+  if(lp.crouching) maxSp *= 0.4;
+  else if(lp.blocking) maxSp *= 0.35;
   const accel = lp.grounded ? GROUND_ACCEL : AIR_ACCEL;
   if(input.left && !input.right) lp.vx -= accel*dt;
   else if(input.right && !input.left) lp.vx += accel*dt;
   else if(lp.grounded){ lp.vx *= 0.78; if(Math.abs(lp.vx)<8) lp.vx=0; }
-  lp.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, lp.vx));
+  lp.vx = Math.max(-maxSp, Math.min(maxSp, lp.vx));
 
-  if(input.jump && !lp._prevJump && lp.ragdollTimer<=0){
+  if(input.jump && !lp._prevJump && lp.ragdollTimer<=0 && !lp.crouching && !lp.blocking){
     if(lp.grounded){ lp.vy=JUMP_VEL; lp.grounded=false; sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y); }
     else if(lp.touchWallDir!==0){
       lp.vx = -lp.touchWallDir*WALL_JUMP_VX; lp.vy = WALL_JUMP_VY; lp.touchWallDir=0;
@@ -292,10 +328,10 @@ function stepLocalPlayer(lp, input, dt){
 
   lp.vy += GRAVITY*dt; lp.vy = Math.min(lp.vy, MAX_FALL);
   localMoveAndCollide(lp, dt);
-  lp.walkPhase += dt*(lp.grounded?Math.abs(lp.vx)*0.02:0);
+  lp.walkPhase += dt*(lp.grounded && !lp.crouching ?Math.abs(lp.vx)*0.02:0);
 
   if(lp.attackCooldownLocal>0) lp.attackCooldownLocal -= dt;
-  if(input.attack && lp.attackCooldownLocal<=0){
+  if(input.attack && !lp.blocking && lp.attackCooldownLocal<=0){
     const wv = WEAPON_VISUALS[lp.weapon];
     if(wv){
       lp.attackCooldownLocal = wv.cooldown;
@@ -425,7 +461,7 @@ function applySnapshot(snap){
         facing:sp.facing, grounded:sp.grounded, aimAngle:sp.aimAngle||0, touchWallDir:0, _prevJump:false, attackCooldownLocal:0,
         weapon:sp.weapon, ammo:sp.ammo, damage:sp.damage,
         alive:sp.alive, ragdollTimer:sp.ragdollTimer, walkPhase:sp.walkPhase, roundWins:sp.roundWins,
-        invuln:sp.invuln, hitFlash:0, attackFlash:0 };
+        invuln:sp.invuln, hitFlash:0, attackFlash:0, blocking:!!sp.blocking, crouching:!!sp.crouching };
       initSkeleton(lp);
       netPlayers.set(sp.id, lp);
     } else {
@@ -434,7 +470,7 @@ function applySnapshot(snap){
         lp.prevX = lp.targetX; lp.prevY = lp.targetY;
         lp.targetX = sp.x; lp.targetY = sp.y; lp.recvTime = now;
         lp.facing=sp.facing; lp.grounded=sp.grounded; lp.aimAngle=sp.aimAngle||0;
-        lp.walkPhase=sp.walkPhase;
+        lp.walkPhase=sp.walkPhase; lp.blocking=!!sp.blocking; lp.crouching=!!sp.crouching;
       } else if(enteringCountdown){
         // a fresh round just reset us server-side — snap our own local sim to that spawn point too,
         // otherwise we'd keep reporting our old (fallen-off-map) position and get eliminated instantly.
@@ -458,14 +494,16 @@ function processEvents(events){
     if(e.t==='hit'){
       const lp = netPlayers.get(e.id);
       if(lp){
-        ragdollImpulse(lp, e.dirx, e.diry, e.power); lp.hitFlash=0.15;
-        spawnParticles(lp.x, lp.y-30, 10, '#fff', 260, 0.35, 900);
+        ragdollImpulse(lp, e.dirx, e.diry, e.power*(e.blocked?0.3:1)); lp.hitFlash=0.15;
+        spawnParticles(lp.x, lp.y-30, e.blocked?6:10, e.blocked?'#9aa0ab':'#fff', e.blocked?160:260, 0.35, 900);
         if(e.id===myId){
           // this is the one place the server overrides local movement: a confirmed hit's knockback.
           lp.vx += e.dirx*e.power; lp.vy += e.diry*e.power - e.power*0.18;
         }
       }
-      sfx.hit();
+      if(e.blocked) tone(300,0.08,'square',0.14,180); else sfx.hit();
+    } else if(e.t==='weapondrop'){
+      if(e.id!==myId){ const w = WEAPON_VISUALS[e.type]; spawnParticles(e.x,e.y,8,w?w.color:'#fff',150,0.3,300); }
     } else if(e.t==='ko'){
       spawnParticles(e.x,e.y,20,'#ddd',300,0.6,500); sfx.ko(); shake(10,0.3);
     } else if(e.t==='shot'){
@@ -618,15 +656,18 @@ window.addEventListener('keydown', e=>{ heldKeys.add(e.code); if(['ArrowUp','Arr
 window.addEventListener('keyup', e=>{ heldKeys.delete(e.code); });
 
 let mouseWorld = {x:WORLD.width/2, y:WORLD.height/2};
-let mouseHeld = false;
+let mouseHeld = false, rightMouseHeld = false;
 function updateMouseWorld(clientX, clientY){
   const rect = canvas.getBoundingClientRect();
   mouseWorld.x = (clientX-rect.left)/rect.width*WORLD.width;
   mouseWorld.y = (clientY-rect.top)/rect.height*WORLD.height;
 }
 canvas.addEventListener('mousemove', e=> updateMouseWorld(e.clientX, e.clientY));
-canvas.addEventListener('mousedown', e=>{ if(e.button===0){ mouseHeld=true; ensureAudio(); } });
-window.addEventListener('mouseup', e=>{ if(e.button===0) mouseHeld=false; });
+canvas.addEventListener('mousedown', e=>{
+  if(e.button===0){ mouseHeld=true; ensureAudio(); }
+  else if(e.button===2){ rightMouseHeld=true; ensureAudio(); }
+});
+window.addEventListener('mouseup', e=>{ if(e.button===0) mouseHeld=false; else if(e.button===2) rightMouseHeld=false; });
 canvas.addEventListener('contextmenu', e=> e.preventDefault());
 canvas.addEventListener('touchmove', e=>{ if(e.touches[0]){ updateMouseWorld(e.touches[0].clientX, e.touches[0].clientY); } }, {passive:true});
 canvas.addEventListener('touchstart', e=>{ if(e.touches[0]){ updateMouseWorld(e.touches[0].clientX, e.touches[0].clientY); mouseHeld=true; ensureAudio(); } }, {passive:true});
@@ -636,8 +677,10 @@ function readLocalInput(){
   const left = heldKeys.has('KeyA')||heldKeys.has('ArrowLeft');
   const right = heldKeys.has('KeyD')||heldKeys.has('ArrowRight');
   const jump = heldKeys.has('KeyW')||heldKeys.has('ArrowUp')||heldKeys.has('Space');
+  const down = heldKeys.has('KeyS')||heldKeys.has('ArrowDown');
   const attack = heldKeys.has('KeyF')||heldKeys.has('Enter')||heldKeys.has('KeyJ')||mouseHeld;
-  let g = {left:false,right:false,jump:false,attack:false};
+  const block = heldKeys.has('ShiftLeft')||heldKeys.has('ShiftRight')||rightMouseHeld;
+  let g = {left:false,right:false,jump:false,attack:false,block:false};
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = pads[0];
   if(pad){
@@ -646,13 +689,33 @@ function readLocalInput(){
     g.right = axis>0.35 || (pad.buttons[15]&&pad.buttons[15].pressed);
     g.jump = !!(pad.buttons[0]&&pad.buttons[0].pressed);
     g.attack = !!((pad.buttons[2]&&pad.buttons[2].pressed)||(pad.buttons[7]&&pad.buttons[7].pressed));
+    g.block = !!(pad.buttons[1]&&pad.buttons[1].pressed);
   }
-  return { left:left||g.left, right:right||g.right, jump:jump||g.jump, attack:attack||g.attack };
+  return { left:left||g.left, right:right||g.right, jump:jump||g.jump, down, attack:attack||g.attack, block:block||g.block };
 }
+let dropPrev = false, dropPadPrev = false;
 setInterval(()=>{
   if(uiState==='GAME' && myId){
     const lp = netPlayers.get(myId);
-    if(lp) send({t:'move', x:lp.x, y:lp.y, vx:lp.vx, vy:lp.vy, facing:lp.facing, grounded:lp.grounded, aimAngle:lp.aimAngle, walkPhase:lp.walkPhase, attack:readLocalInput().attack});
+    // only report position while alive — otherwise a stale (fallen-off-map) position could be
+    // reported right after a round reset and instantly re-eliminate us (this was the intermittent
+    // respawn bug). While dead we simply stop reporting until the new round marks us alive again.
+    if(lp && lp.alive){
+      const input = readLocalInput();
+      send({t:'move', x:lp.x, y:lp.y, vx:lp.vx, vy:lp.vy, facing:lp.facing, grounded:lp.grounded, aimAngle:lp.aimAngle, walkPhase:lp.walkPhase, attack:input.attack, blocking:lp.blocking, crouching:lp.crouching});
+      const dropKey = heldKeys.has('KeyQ');
+      const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+      const dropPad = !!(pads[0] && pads[0].buttons[4] && pads[0].buttons[4].pressed);
+      if((dropKey && !dropPrev) || (dropPad && !dropPadPrev)){
+        if(lp.weapon!=='fists'){
+          send({t:'drop'});
+          spawnParticles(lp.x,lp.y-20,8,WEAPON_VISUALS[lp.weapon]?WEAPON_VISUALS[lp.weapon].color:'#fff',150,0.3,300);
+          tone(220,0.07,'square',0.12,140);
+          lp.weapon='fists'; lp.ammo=0;
+        }
+      }
+      dropPrev = dropKey; dropPadPrev = dropPad;
+    }
   }
 }, 33);
 window.addEventListener('keydown', e=>{
@@ -789,13 +852,21 @@ function drawStick(p){
     ctx.beginPath(); ctx.moveTo(pts[a].x,pts[a].y); ctx.lineTo(pts[b].x,pts[b].y); ctx.stroke();
   }
   const w = WEAPON_VISUALS[p.weapon];
-  if(w && p.weapon!=='fists'){
+  if(w && p.weapon!=='fists' && !p.blocking){
     const dx=pts.rHand.x-pts.neck.x, dy=pts.rHand.y-pts.neck.y, ang=Math.atan2(dy,dx);
     ctx.save(); ctx.translate(pts.rHand.x,pts.rHand.y); ctx.rotate(ang);
     ctx.fillStyle='#000';
     if(w.type==='melee') ctx.fillRect(0,-5,30,10); else ctx.fillRect(0,-5,26,10);
     ctx.fillStyle=w.color;
     if(w.type==='melee') ctx.fillRect(1,-3.5,27,7); else ctx.fillRect(1,-3.5,23,7);
+    ctx.restore();
+  }
+  if(p.blocking){
+    const sxp = pts.neck.x+p.facing*20, syp = pts.neck.y-4;
+    ctx.save(); ctx.translate(sxp,syp);
+    ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(0,0,10,22,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#9aa0ab'; ctx.beginPath(); ctx.ellipse(0,0,7,19,0,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='#5a5f6a'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(6,0); ctx.stroke();
     ctx.restore();
   }
   const hd=pts.head, nk=pts.neck;
