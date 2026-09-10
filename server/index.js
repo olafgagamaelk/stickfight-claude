@@ -105,6 +105,8 @@ wss.on('connection', (ws) => {
       }
     } else if (msg.t === 'move') {
       room.reportMove(playerId, msg);
+    } else if (msg.t === 'drop') {
+      room.dropWeapon(playerId);
     } else if (msg.t === 'fx') {
       broadcastExcept(room, playerId, { t: 'fx', kind: msg.kind, x: msg.x, y: msg.y, id: playerId });
     } else if (msg.t === 'continue') {
