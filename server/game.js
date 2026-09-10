@@ -42,6 +42,8 @@ function ARENAS_DEF() { return [
       mkPlatform(500, 410, 280, 24),
       mkPlatform(40, 470, 170, 24),
       mkPlatform(1070, 470, 170, 24),
+      mkPlatform(250, 560, 90, 20),
+      mkPlatform(940, 560, 90, 20),
       mkPlatform(550, 210, 180, 22, { moving: { axis: 'x', range: 150, speed: 0.8, phase: 0 } }),
       mkPlatform(500, 410, 24, 240, { wall: true }),
       mkPlatform(756, 410, 24, 240, { wall: true })
@@ -89,6 +91,8 @@ function ARENAS_DEF() { return [
       mkPlatform(900, 600, 380, 50),
       mkPlatform(60, 440, 220, 22),
       mkPlatform(1000, 440, 220, 22),
+      mkPlatform(310, 520, 80, 20),
+      mkPlatform(890, 520, 80, 20),
       mkPlatform(500, 380, 280, 24),
       mkPlatform(560, 190, 160, 22),
       mkPlatform(520, 380, 20, 220, { wall: true }),
@@ -122,12 +126,16 @@ class Room {
   }
 
   addPlayer(id, name) {
-    if (this.order.length >= 4) return null;
-    const idx = this.order.length;
+    if (this.connectedCount() >= 4) return null;
+    const usedIdx = new Set(this.order
+      .map(pid => this.players.get(pid))
+      .filter(pp => pp && pp.connected)
+      .map(pp => pp.idx));
+    let idx = 0; while (usedIdx.has(idx) && idx < 4) idx++;
     const p = {
       id, idx, name: (name || NAMES_FALLBACK[idx]).slice(0, 14), color: COLORS[idx],
       ready: false, connected: true,
-      x: 100, y: 100, vx: 0, vy: 0, facing: 1, grounded: false, aimAngle: 0,
+      x: 100, y: 100, vx: 0, vy: 0, facing: 1, grounded: false, aimAngle: 0, blocking: false,
       damage: 0, alive: true, weapon: 'fists', ammo: 0, attackCooldown: 0, ragdollTimer: 0,
       invuln: 0, walkPhase: 0, roundWins: 0, attackHeld: false
     };
@@ -137,7 +145,14 @@ class Room {
   }
   removePlayer(id) {
     const p = this.players.get(id);
-    if (p) p.connected = false, p.alive = false;
+    if (!p) return;
+    if (this.state === 'LOBBY') {
+      // nobody's playing yet — fully free the slot so a replacement gets a clean color/index
+      this.players.delete(id);
+      this.order = this.order.filter(pid => pid !== id);
+    } else {
+      p.connected = false; p.alive = false;
+    }
   }
   aliveCount() { return this.order.filter(id => { const p = this.players.get(id); return p && p.connected && p.alive; }).length; }
   connectedCount() { return this.order.filter(id => this.players.get(id) && this.players.get(id).connected).length; }
@@ -154,19 +169,34 @@ class Room {
 
   resetRound() {
     const sp = this.arena.spawnPoints;
-    this.order.forEach((id, i) => {
+    const connectedIds = this.order.filter(id => { const p = this.players.get(id); return p && p.connected; });
+    for (let i = connectedIds.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [connectedIds[i], connectedIds[j]] = [connectedIds[j], connectedIds[i]];
+    }
+    connectedIds.forEach((id, i) => {
       const p = this.players.get(id);
-      if (!p) return;
       const spawn = sp[i % sp.length];
       p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.grounded = false;
-      p.damage = 0; p.alive = p.connected; p.weapon = 'fists'; p.ammo = 0;
+      p.damage = 0; p.alive = true; p.weapon = 'fists'; p.ammo = 0; p.blocking = false;
       p.attackCooldown = 0; p.ragdollTimer = 0; p.invuln = 1.2; p.attackHeld = false;
       p.facing = spawn.x < WORLD.width / 2 ? 1 : -1;
       p.aimAngle = p.facing > 0 ? 0 : Math.PI;
     });
+    this.order.forEach(id => { const p = this.players.get(id); if (p && !p.connected) p.alive = false; });
     this.projectiles = []; this.fallingCrates = []; this.pickups = [];
     this.dropTimer = 1.2 + Math.random() * 1.8;
     this.arena.platforms.forEach(pl => { pl.x = pl.baseX; pl.y = pl.baseY; });
+  }
+
+  /** Drop the currently-held weapon as a pickup at the player's position. */
+  dropWeapon(playerId) {
+    const p = this.players.get(playerId);
+    if (!p || !p.alive || p.weapon === 'fists') return;
+    const type = p.weapon;
+    this.pickups.push({ x: p.x, y: p.y - 20, type });
+    this.events.push({ t: 'weapondrop', id: p.id, x: p.x, y: p.y - 20, type });
+    p.weapon = 'fists'; p.ammo = 0;
   }
 
   /** Called whenever a client reports its own movement/pose. Trusted, lightly sanity-clamped. */
@@ -182,21 +212,26 @@ class Room {
     if (typeof data.aimAngle === 'number' && isFinite(data.aimAngle)) p.aimAngle = data.aimAngle;
     if (typeof data.walkPhase === 'number' && isFinite(data.walkPhase)) p.walkPhase = data.walkPhase;
     p.attackHeld = !!data.attack;
+    p.blocking = !!data.blocking;
+    p.crouching = !!data.crouching;
   }
 
-  launch(player, dirx, diry, power) {
+  launch(player, dirx, diry, power, blocked) {
     const mag = Math.hypot(dirx, diry) || 1;
-    player.ragdollTimer = Math.min(1.5, 0.4 + power * 0.0018);
-    this.events.push({ t: 'hit', id: player.id, dirx: dirx / mag, diry: diry / mag, power });
+    player.ragdollTimer = blocked ? Math.min(0.5, 0.15 + power * 0.0006) : Math.min(1.5, 0.4 + power * 0.0018);
+    this.events.push({ t: 'hit', id: player.id, dirx: dirx / mag, diry: diry / mag, power, blocked: !!blocked });
   }
 
   dealDamage(target, amount, sourcePos, sourceVel, baseKnock) {
     if (!target.alive || target.invuln > 0) return;
-    target.damage += amount;
+    const blocked = !!target.blocking;
+    const dmgMul = blocked ? 0.35 : 1;
+    const knockMul = blocked ? 0.3 : 1;
+    target.damage += amount * dmgMul;
     let ndx = target.x - sourcePos.x, ndy = (target.y - 40) - sourcePos.y - 40;
     if (sourceVel && (Math.abs(sourceVel.x) > 1 || Math.abs(sourceVel.y) > 1)) { ndx = sourceVel.x; ndy = sourceVel.y - 120; }
-    const power = (baseKnock || 220) + target.damage * (baseKnock || 220) * 0.028;
-    this.launch(target, ndx || (Math.random() < 0.5 ? -1 : 1), ndy || -200, power);
+    const power = ((baseKnock || 220) + target.damage * (baseKnock || 220) * 0.028) * knockMul;
+    this.launch(target, ndx || (Math.random() < 0.5 ? -1 : 1), ndy || -200, power, blocked);
     this.checkElimination(target);
   }
 
@@ -207,10 +242,12 @@ class Room {
       if (!p || !p.alive) return;
       const d = dist(x, y, p.x, p.y - 25);
       if (d < radius && p.invuln <= 0) {
+        const blocked = !!p.blocking;
+        const dmgMul = blocked ? 0.35 : 1, knockMul = blocked ? 0.3 : 1;
         const falloff = 1 - d / radius;
-        p.damage += dmg * falloff + 4;
+        p.damage += (dmg * falloff + 4) * dmgMul;
         const dirx = (p.x - x) || (Math.random() < 0.5 ? -1 : 1), diry = (p.y - 25 - y) - 60;
-        this.launch(p, dirx, diry, 300 * falloff + 260);
+        this.launch(p, dirx, diry, (300 * falloff + 260) * knockMul, blocked);
         this.checkElimination(p);
       }
     });
@@ -331,7 +368,7 @@ class Room {
       if (p.ragdollTimer > 0) p.ragdollTimer -= dt;
       if (!p.alive) return;
 
-      if (p.attackHeld) this.tryAttack(p);
+      if (p.attackHeld && !p.blocking) this.tryAttack(p);
 
       if (p.weapon === 'fists') {
         for (let i = this.pickups.length - 1; i >= 0; i--) {
@@ -405,7 +442,8 @@ class Room {
           id: p.id, idx: p.idx, name: p.name, color: p.color, connected: p.connected,
           x: p.x, y: p.y, vx: p.vx, vy: p.vy, facing: p.facing, grounded: p.grounded, aimAngle: p.aimAngle,
           damage: Math.round(p.damage), alive: p.alive, weapon: p.weapon, ammo: p.ammo,
-          ragdollTimer: p.ragdollTimer, walkPhase: p.walkPhase, roundWins: p.roundWins, invuln: p.invuln
+          ragdollTimer: p.ragdollTimer, walkPhase: p.walkPhase, roundWins: p.roundWins, invuln: p.invuln,
+          blocking: !!p.blocking, crouching: !!p.crouching
         };
       }).filter(Boolean),
       projectiles: this.projectiles.map(pr => ({ x: pr.x, y: pr.y, vx: pr.vx, vy: pr.vy, weapon: pr.weapon, explosive: pr.explosive })),
