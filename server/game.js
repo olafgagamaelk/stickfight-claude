@@ -108,6 +108,18 @@ function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function angleDiff(a, b) { let d = Math.abs(a - b) % (Math.PI * 2); if (d > Math.PI) d = Math.PI * 2 - d; return d; }
 
+// Real player hitbox — mirrors the client's own collision box exactly, including the
+// smaller profile while crouching/lying down, so combat actually respects your stance.
+const HALF_W = 15, FOOT_OFFSET = 34, HEAD_TOP_OFFSET = -56, CROUCH_TOP_OFFSET = -30;
+function getPlayerBox(p) {
+  const top = p.crouching ? CROUCH_TOP_OFFSET : HEAD_TOP_OFFSET;
+  return { x: p.x - HALF_W, y: p.y + top, w: HALF_W * 2, h: FOOT_OFFSET - top };
+}
+function pointInBox(x, y, box) { return x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h; }
+function nearestPointOnBox(x, y, box) {
+  return { x: clamp(x, box.x, box.x + box.w), y: clamp(y, box.y, box.y + box.h) };
+}
+
 class Room {
   constructor(code) {
     this.code = code;
@@ -137,7 +149,7 @@ class Room {
       ready: false, connected: true,
       x: 100, y: 100, vx: 0, vy: 0, facing: 1, grounded: false, aimAngle: 0, blocking: false,
       damage: 0, alive: true, weapon: 'fists', ammo: 0, attackCooldown: 0, ragdollTimer: 0,
-      invuln: 0, walkPhase: 0, roundWins: 0, attackHeld: false
+      invuln: 0, walkPhase: 0, roundWins: 0, attackHeld: false, blockStamina: 100, blockLockout: 0
     };
     this.players.set(id, p);
     this.order.push(id);
@@ -180,6 +192,7 @@ class Room {
       p.x = spawn.x; p.y = spawn.y; p.vx = 0; p.vy = 0; p.grounded = false;
       p.damage = 0; p.alive = true; p.weapon = 'fists'; p.ammo = 0; p.blocking = false;
       p.attackCooldown = 0; p.ragdollTimer = 0; p.invuln = 1.2; p.attackHeld = false;
+      p.blockStamina = 100; p.blockLockout = 0;
       p.facing = spawn.x < WORLD.width / 2 ? 1 : -1;
       p.aimAngle = p.facing > 0 ? 0 : Math.PI;
     });
@@ -194,7 +207,7 @@ class Room {
     const p = this.players.get(playerId);
     if (!p || !p.alive || p.weapon === 'fists') return;
     const type = p.weapon;
-    this.pickups.push({ x: p.x, y: p.y - 20, type });
+    this.pickups.push({ x: p.x, y: p.y - 20, type, graceTime: 0.6 });
     this.events.push({ t: 'weapondrop', id: p.id, x: p.x, y: p.y - 20, type });
     p.weapon = 'fists'; p.ammo = 0;
   }
@@ -240,7 +253,8 @@ class Room {
     this.order.forEach(id => {
       const p = this.players.get(id);
       if (!p || !p.alive) return;
-      const d = dist(x, y, p.x, p.y - 25);
+      const np = nearestPointOnBox(x, y, getPlayerBox(p));
+      const d = dist(x, y, np.x, np.y);
       if (d < radius && p.invuln <= 0) {
         const blocked = !!p.blocking;
         const dmgMul = blocked ? 0.35 : 1, knockMul = blocked ? 0.3 : 1;
@@ -270,9 +284,11 @@ class Room {
       if (id === p.id) return;
       const target = this.players.get(id);
       if (!target || !target.alive) return;
-      const dx = target.x - originX, dy = (target.y - 26) - originY;
+      const box = getPlayerBox(target);
+      const np = nearestPointOnBox(originX, originY, box);
+      const dx = np.x - originX, dy = np.y - originY;
       const d = Math.hypot(dx, dy);
-      if (d > w.range + 22) return;
+      if (d > w.range) return;
       if (angleDiff(Math.atan2(dy, dx), p.aimAngle) > MELEE_CONE) return;
       this.dealDamage(target, w.dmg, { x: originX, y: originY },
         { x: Math.cos(p.aimAngle) * 380, y: Math.sin(p.aimAngle) * 380 - 100 }, w.knockback);
@@ -366,6 +382,16 @@ class Room {
       if (p.attackCooldown > 0) p.attackCooldown -= dt;
       if (p.invuln > 0) p.invuln -= dt;
       if (p.ragdollTimer > 0) p.ragdollTimer -= dt;
+
+      // block stamina: server has the final say, so a client can never just hold block forever
+      if (p.blockLockout > 0) { p.blockLockout -= dt; p.blocking = false; }
+      else if (p.blocking) {
+        p.blockStamina -= 42 * dt;
+        if (p.blockStamina <= 0) { p.blockStamina = 0; p.blocking = false; p.blockLockout = 1.4; }
+      } else {
+        p.blockStamina = Math.min(100, p.blockStamina + 26 * dt);
+      }
+
       if (!p.alive) return;
 
       if (p.attackHeld && !p.blocking) this.tryAttack(p);
@@ -373,6 +399,7 @@ class Room {
       if (p.weapon === 'fists') {
         for (let i = this.pickups.length - 1; i >= 0; i--) {
           const pu = this.pickups[i];
+          if (pu.graceTime > 0) continue;
           if (Math.abs(pu.x - p.x) < 34 && Math.abs(pu.y - p.y) < 50) {
             p.weapon = pu.type; p.ammo = WEAPONS[pu.type].ammo || 0;
             this.events.push({ t: 'pickup', id: p.id });
@@ -383,6 +410,8 @@ class Room {
       }
       this.checkElimination(p);
     });
+
+    for (const pu of this.pickups) { if (pu.graceTime > 0) pu.graceTime = Math.max(0, pu.graceTime - dt); }
 
     this.dropTimer -= dt;
     if (this.dropTimer <= 0) {
@@ -408,7 +437,10 @@ class Room {
         for (const id of this.order) {
           const target = this.players.get(id);
           if (!target || !target.alive || id === pr.owner) continue;
-          if (dist(pr.x, pr.y, target.x, target.y - 30) < 26) {
+          const box = getPlayerBox(target);
+          const pad = 8;
+          const hit = pr.x >= box.x - pad && pr.x <= box.x + box.w + pad && pr.y >= box.y - pad && pr.y <= box.y + box.h + pad;
+          if (hit) {
             if (pr.explosive) this.explode(pr.x, pr.y, pr.splashRadius, pr.splashDmg);
             else this.dealDamage(target, pr.dmg, { x: pr.x - pr.vx * 0.02, y: pr.y - pr.vy * 0.02 }, { x: pr.vx * 0.5, y: pr.vy * 0.5 - 140 }, 240);
             removed = true; break;
@@ -443,7 +475,7 @@ class Room {
           x: p.x, y: p.y, vx: p.vx, vy: p.vy, facing: p.facing, grounded: p.grounded, aimAngle: p.aimAngle,
           damage: Math.round(p.damage), alive: p.alive, weapon: p.weapon, ammo: p.ammo,
           ragdollTimer: p.ragdollTimer, walkPhase: p.walkPhase, roundWins: p.roundWins, invuln: p.invuln,
-          blocking: !!p.blocking, crouching: !!p.crouching
+          blocking: !!p.blocking, crouching: !!p.crouching, blockStamina: p.blockStamina
         };
       }).filter(Boolean),
       projectiles: this.projectiles.map(pr => ({ x: pr.x, y: pr.y, vx: pr.vx, vy: pr.vy, weapon: pr.weapon, explosive: pr.explosive })),
