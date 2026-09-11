@@ -264,6 +264,7 @@ function ragdollImpulse(p, dirx, diry, power){
    every snapshot, so nobody can cheat by predicting wrongly).
    ============================================================ */
 const GRAVITY=1650, MAX_FALL=1500, GROUND_ACCEL=3400, AIR_ACCEL=1900, MAX_SPEED=360;
+const FASTFALL_ACCEL=2600, MAX_FALL_FAST=2650;
 const JUMP_VEL=-820, WALL_JUMP_VX=440, WALL_JUMP_VY=-760, WALL_SLIDE_CAP=240;
 const CROUCH_TOP_OFFSET=-30;
 function sendFx(kind,x,y){ send({t:'fx', kind, x, y}); }
@@ -305,8 +306,20 @@ function localMoveAndCollide(e, dt){
   if(!e.grounded && e.touchWallDir!==0 && e.vy>0) e.vy=Math.min(e.vy, WALL_SLIDE_CAP);
 }
 function stepLocalPlayer(lp, input, dt){
-  lp.crouching = !!(input.down && lp.grounded && !lp.blocking);
-  lp.blocking = !!input.block;
+  lp.crouching = !!(input.down && !lp.blocking);
+
+  // block stamina: mirrors the server's own authoritative version, so the character can't
+  // just hold guard forever — once drained, blocking locks out for a bit while it refills.
+  if(lp.blockStamina===undefined) lp.blockStamina=100;
+  if(lp.blockLockout===undefined) lp.blockLockout=0;
+  if(lp.blockLockout>0){ lp.blockLockout-=dt; lp.blocking=false; }
+  else if(input.block && !lp.crouching){
+    if(lp.blockStamina>0){ lp.blocking=true; lp.blockStamina=Math.max(0,lp.blockStamina-42*dt); if(lp.blockStamina<=0) lp.blockLockout=1.4; }
+    else lp.blocking=false;
+  } else {
+    lp.blocking=false;
+    lp.blockStamina=Math.min(100, lp.blockStamina+26*dt);
+  }
 
   let maxSp = MAX_SPEED;
   if(lp.crouching) maxSp *= 0.4;
@@ -317,16 +330,18 @@ function stepLocalPlayer(lp, input, dt){
   else if(lp.grounded){ lp.vx *= 0.78; if(Math.abs(lp.vx)<8) lp.vx=0; }
   lp.vx = Math.max(-maxSp, Math.min(maxSp, lp.vx));
 
-  if(input.jump && !lp._prevJump && lp.ragdollTimer<=0 && !lp.crouching && !lp.blocking){
-    if(lp.grounded){ lp.vy=JUMP_VEL; lp.grounded=false; sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y); }
-    else if(lp.touchWallDir!==0){
+  if(input.jump && !lp._prevJump && lp.ragdollTimer<=0 && !lp.blocking){
+    if(lp.grounded && !lp.crouching){ lp.vy=JUMP_VEL; lp.grounded=false; sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y); }
+    else if(!lp.grounded && lp.touchWallDir!==0){
       lp.vx = -lp.touchWallDir*WALL_JUMP_VX; lp.vy = WALL_JUMP_VY; lp.touchWallDir=0;
       sfx.jump(); spawnDust(lp.x,lp.y); sendFx('jump',lp.x,lp.y);
     }
   }
   lp._prevJump = input.jump;
 
-  lp.vy += GRAVITY*dt; lp.vy = Math.min(lp.vy, MAX_FALL);
+  lp.vy += GRAVITY*dt;
+  if(!lp.grounded && lp.crouching){ lp.vy += FASTFALL_ACCEL*dt; lp.vy = Math.min(lp.vy, MAX_FALL_FAST); }
+  else lp.vy = Math.min(lp.vy, MAX_FALL);
   localMoveAndCollide(lp, dt);
   lp.walkPhase += dt*(lp.grounded && !lp.crouching ?Math.abs(lp.vx)*0.02:0);
 
@@ -461,7 +476,7 @@ function applySnapshot(snap){
         facing:sp.facing, grounded:sp.grounded, aimAngle:sp.aimAngle||0, touchWallDir:0, _prevJump:false, attackCooldownLocal:0,
         weapon:sp.weapon, ammo:sp.ammo, damage:sp.damage,
         alive:sp.alive, ragdollTimer:sp.ragdollTimer, walkPhase:sp.walkPhase, roundWins:sp.roundWins,
-        invuln:sp.invuln, hitFlash:0, attackFlash:0, blocking:!!sp.blocking, crouching:!!sp.crouching };
+        invuln:sp.invuln, hitFlash:0, attackFlash:0, blocking:!!sp.blocking, crouching:!!sp.crouching, blockStamina:sp.blockStamina!==undefined?sp.blockStamina:100, blockLockout:0 };
       initSkeleton(lp);
       netPlayers.set(sp.id, lp);
     } else {
@@ -470,7 +485,7 @@ function applySnapshot(snap){
         lp.prevX = lp.targetX; lp.prevY = lp.targetY;
         lp.targetX = sp.x; lp.targetY = sp.y; lp.recvTime = now;
         lp.facing=sp.facing; lp.grounded=sp.grounded; lp.aimAngle=sp.aimAngle||0;
-        lp.walkPhase=sp.walkPhase; lp.blocking=!!sp.blocking; lp.crouching=!!sp.crouching;
+        lp.walkPhase=sp.walkPhase; lp.blocking=!!sp.blocking; lp.crouching=!!sp.crouching; lp.blockStamina=sp.blockStamina;
       } else if(enteringCountdown){
         // a fresh round just reset us server-side — snap our own local sim to that spawn point too,
         // otherwise we'd keep reporting our old (fallen-off-map) position and get eliminated instantly.
@@ -679,7 +694,7 @@ function readLocalInput(){
   const jump = heldKeys.has('KeyW')||heldKeys.has('ArrowUp')||heldKeys.has('Space');
   const down = heldKeys.has('KeyS')||heldKeys.has('ArrowDown');
   const attack = heldKeys.has('KeyF')||heldKeys.has('Enter')||heldKeys.has('KeyJ')||mouseHeld;
-  const block = heldKeys.has('ShiftLeft')||heldKeys.has('ShiftRight')||rightMouseHeld;
+  const block = heldKeys.has('ShiftLeft')||heldKeys.has('ShiftRight')||heldKeys.has('KeyE')||rightMouseHeld;
   let g = {left:false,right:false,jump:false,attack:false,block:false};
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = pads[0];
@@ -881,6 +896,13 @@ function drawStick(p){
     ctx.save(); ctx.translate(sx,sy);
     ctx.fillStyle=p.color; ctx.font='bold 13px Oswald'; ctx.textAlign='center';
     ctx.fillText(p.name, pts.head.x, pts.head.y-24);
+    if(p.blockStamina!==undefined && (p.blocking || p.blockStamina<100)){
+      const bw=34, bh=4, bx=pts.head.x-bw/2, by=pts.head.y-20;
+      ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(bx,by,bw,bh);
+      const frac = Math.max(0,Math.min(1,p.blockStamina/100));
+      ctx.fillStyle = frac>0.3 ? '#9aa0ab' : '#e6394a';
+      ctx.fillRect(bx,by,bw*frac,bh);
+    }
     ctx.restore();
   }
 }
